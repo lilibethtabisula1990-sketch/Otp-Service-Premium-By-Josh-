@@ -4,6 +4,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import axios from "axios";
 import path from "path";
 import { fileURLToPath } from "url";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,7 +14,22 @@ async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
-  app.use(express.json());
+  // Security Headers
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+  }));
+
+  // Rate Limiting
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use("/api/", limiter);
+
+  app.use(express.json({ limit: "1kb" }));
 
   // Vite middleware for development
   let vite;
@@ -30,15 +47,31 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ 
+    server,
+    verifyClient: (info, callback) => {
+      const origin = info.origin || info.req.headers.origin;
+      const allowedOrigins = [
+        "http://localhost:3000",
+        "https://ais-dev-q6dj35v5g7nj375i6tczo7-620104441534.asia-east1.run.app",
+        "https://ais-pre-q6dj35v5g7nj375i6tczo7-620104441534.asia-east1.run.app"
+      ];
+      if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
+        callback(true);
+      } else {
+        callback(false, 403, "Forbidden Origin");
+      }
+    }
+  });
 
   const abuseTracker = new Map<string, { count: number; lastTest: number; isTesting: boolean }>();
   const bannedIPs = new Set<string>();
   const uniqueUsers = new Set<string>();
+  const activeConnections = new Map<string, number>();
   let totalLikes = 0;
 
   const broadcastStats = () => {
@@ -59,6 +92,14 @@ async function startServer() {
   wss.on("connection", (ws, req) => {
     const ip = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'unknown';
     
+    const currentConns = activeConnections.get(ip) || 0;
+    if (currentConns >= 3) {
+      ws.send(JSON.stringify({ type: "ERROR", payload: { message: "Too many concurrent connections." } }));
+      ws.close();
+      return;
+    }
+    activeConnections.set(ip, currentConns + 1);
+
     uniqueUsers.add(ip);
     broadcastStats();
     
@@ -68,13 +109,23 @@ async function startServer() {
       return;
     }
 
-    console.log(`Client connected from ${ip}`);
+    const sessionToken = Math.random().toString(36).substring(2, 15);
+    ws.send(JSON.stringify({ type: "SESSION_INIT", payload: { token: sessionToken } }));
 
     ws.on("message", async (message) => {
       try {
         const data = JSON.parse(message.toString());
         if (data.type === "START_TEST") {
+          if (data.payload.token !== sessionToken) {
+            ws.send(JSON.stringify({ type: "ERROR", payload: { message: "Security token mismatch." } }));
+            return;
+          }
+
           const { phoneNumber, totalRequests } = data.payload;
+          if (!phoneNumber || !/^\d{10,12}$/.test(phoneNumber)) {
+            ws.send(JSON.stringify({ type: "ERROR", payload: { message: "Invalid phone number." } }));
+            return;
+          }
           
           let tracker = abuseTracker.get(ip) || { count: 0, lastTest: 0, isTesting: false };
           const now = Date.now();
@@ -125,8 +176,8 @@ async function startServer() {
           tracker.lastTest = now;
           abuseTracker.set(ip, tracker);
 
-          await runStressTest(ws, phoneNumber, totalRequests);
-
+          await runStressTest(ws, phoneNumber, totalRequests, ip, abuseTracker);
+          
           tracker = abuseTracker.get(ip)!;
           tracker.isTesting = false;
           abuseTracker.set(ip, tracker);
@@ -137,6 +188,12 @@ async function startServer() {
       } catch (error) {
         console.error("WebSocket message error:", error);
       }
+    });
+
+    ws.on("close", () => {
+      const conns = activeConnections.get(ip) || 1;
+      if (conns <= 1) activeConnections.delete(ip);
+      else activeConnections.set(ip, conns - 1);
     });
   });
 
@@ -445,7 +502,7 @@ const services = [
   }
 ];
 
-async function runStressTest(ws: WebSocket, phoneNumber: string, totalRequests: number) {
+async function runStressTest(ws: WebSocket, phoneNumber: string, totalRequests: number, ip: string, abuseTracker: Map<string, any>) {
   const count = Math.min(totalRequests, 50);
   let completed = 0;
   let successful = 0;
@@ -459,6 +516,11 @@ async function runStressTest(ws: WebSocket, phoneNumber: string, totalRequests: 
       const index = queue.shift();
       if (index === undefined) break;
 
+      // Check if client is still connected
+      if (ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
       const service = services[index % services.length];
       const result = await service.fn(phoneNumber);
 
@@ -466,35 +528,39 @@ async function runStressTest(ws: WebSocket, phoneNumber: string, totalRequests: 
       if (result.success) successful++;
       else failed++;
 
-      ws.send(JSON.stringify({
-        type: "PROGRESS",
-        payload: {
-          result,
-          stats: {
-            completed,
-            successful,
-            failed,
-            total: totalRequests
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "PROGRESS",
+          payload: {
+            result,
+            stats: {
+              completed,
+              successful,
+              failed,
+              total: count
+            }
           }
-        }
-      }));
+        }));
+      }
     }
   };
 
   const workers = Array.from({ length: maxConcurrent }, () => processQueue());
   await Promise.all(workers);
 
-  ws.send(JSON.stringify({
-    type: "COMPLETE",
-    payload: {
-      stats: {
-        completed,
-        successful,
-        failed,
-        total: totalRequests
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "COMPLETE",
+      payload: {
+        stats: {
+          completed,
+          successful,
+          failed,
+          total: count
+        }
       }
-    }
-  }));
+    }));
+  }
 }
 
 startServer();
