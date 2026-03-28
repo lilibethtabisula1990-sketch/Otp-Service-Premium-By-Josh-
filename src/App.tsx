@@ -48,7 +48,34 @@ export default function App() {
   const [popupType, setPopupType] = useState<'VIP' | 'OFFER' | 'SCRIPT' | 'SUPPORT'>('VIP');
   const [globalStats, setGlobalStats] = useState({ totalLikes: 0, totalUsers: 0 });
   const [hasLiked, setHasLiked] = useState(false);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isAppOpening, setIsAppOpening] = useState(true);
+  const [showWeeklyAd, setShowWeeklyAd] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Initial App Loading Simulation
+    const timer = setTimeout(() => {
+      setIsAppOpening(false);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    // Weekly Ad Logic
+    const lastShown = localStorage.getItem('lastWeeklyAdShown');
+    const now = Date.now();
+    const oneWeek = 7 * 24 * 60 * 60 * 1000;
+
+    if (!lastShown || now - parseInt(lastShown) > oneWeek) {
+      const timer = setTimeout(() => {
+        setShowWeeklyAd(true);
+        localStorage.setItem('lastWeeklyAdShown', now.toString());
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -62,6 +89,7 @@ export default function App() {
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'PROGRESS') {
+        setIsLoading(false);
         const { result, stats } = data.payload;
         setLogs(prev => [{
           id: Math.random().toString(36).substr(2, 9),
@@ -71,16 +99,21 @@ export default function App() {
         setStats(stats);
       } else if (data.type === 'COMPLETE') {
         setIsTesting(false);
+        setIsLoading(false);
         setCooldown(30);
       } else if (data.type === 'ERROR') {
+        setIsLoading(false);
         alert(data.payload.message);
         setIsTesting(false);
       } else if (data.type === 'BANNED') {
+        setIsLoading(false);
         setIsBanned(true);
         setBanMessage(data.payload.message);
         setIsTesting(false);
       } else if (data.type === 'GLOBAL_STATS') {
         setGlobalStats(data.payload);
+      } else if (data.type === 'SESSION_INIT') {
+        setSessionToken(data.payload.token);
       }
     };
 
@@ -125,14 +158,19 @@ export default function App() {
   }, []);
 
   const startTest = () => {
-    if (!phoneNumber || !ws || cooldown > 0) return;
+    if (!phoneNumber || !ws || cooldown > 0 || !sessionToken) return;
     const count = Math.min(totalRequests, 50);
     setLogs([]);
     setStats({ completed: 0, successful: 0, failed: 0, total: count });
     setIsTesting(true);
+    setIsLoading(true);
     ws.send(JSON.stringify({
       type: 'START_TEST',
-      payload: { phoneNumber, totalRequests: count }
+      payload: { 
+        phoneNumber, 
+        totalRequests: count,
+        token: sessionToken
+      }
     }));
   };
 
@@ -165,8 +203,72 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-gray-100 font-sans selection:bg-orange-500/30">
+      {/* App Opening Loading System */}
+      <AnimatePresence>
+        {isAppOpening && (
+          <motion.div 
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[300] flex flex-col items-center justify-center bg-black"
+          >
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.5 }}
+              className="relative mb-12"
+            >
+              <div className="w-32 h-32 border-4 border-orange-500/10 rounded-full animate-spin border-t-orange-500" />
+              <Zap className="w-12 h-12 text-orange-500 absolute top-1/2 left-1/2 -translate-y-1/2 -translate-x-1/2 animate-pulse" />
+            </motion.div>
+            
+            <motion.div
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.3 }}
+              className="text-center"
+            >
+              <h1 className="text-3xl font-black text-white uppercase tracking-[0.5em] italic mb-2">
+                JOSH <span className="text-orange-500">PREMIUM</span>
+              </h1>
+              <p className="text-gray-500 text-[10px] uppercase tracking-[0.3em] font-mono">
+                Establishing Secure Connection...
+              </p>
+            </motion.div>
+
+            <div className="absolute bottom-12 w-48 h-1 bg-white/5 rounded-full overflow-hidden">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: "100%" }}
+                transition={{ duration: 2, ease: "easeInOut" }}
+                className="h-full bg-orange-500 shadow-[0_0_20px_rgba(249,115,22,0.5)]"
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Permanent Channel Announcement Sticky Bar */}
+      <div className="bg-orange-500 text-black py-2 px-6 sticky top-0 z-[60] shadow-lg">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 overflow-hidden">
+          <div className="flex items-center gap-3 whitespace-nowrap">
+            <Activity className="w-4 h-4 animate-pulse" />
+            <span className="text-[10px] font-black uppercase tracking-widest">
+              JEFF OFFICIAL CHANNEL: Join Now Our Official Channel And To Be Notified On Up Comming Update
+            </span>
+          </div>
+          <a 
+            href="https://t.me/txtfilegenerator"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bg-black text-white text-[9px] font-bold px-4 py-1 rounded-full uppercase tracking-widest hover:scale-105 transition-transform shrink-0"
+          >
+            Join Now
+          </a>
+        </div>
+      </div>
+
       {/* Header */}
-      <header className="border-b border-white/5 bg-black/40 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-white/5 bg-black/40 backdrop-blur-md sticky top-10 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(249,115,22,0.4)]">
@@ -446,6 +548,83 @@ export default function App() {
           background: rgba(249, 115, 22, 0.2);
         }
       `}} />
+
+      {/* Loading System Overlay */}
+      <AnimatePresence>
+        {isLoading && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-black/90 backdrop-blur-xl"
+          >
+            <div className="relative">
+              <div className="w-24 h-24 border-4 border-orange-500/20 rounded-full animate-spin border-t-orange-500 shadow-[0_0_30px_rgba(249,115,22,0.2)]" />
+              <Zap className="w-8 h-8 text-orange-500 absolute top-1/2 left-1/2 -translate-y-1/2 -translate-x-1/2 animate-pulse" />
+            </div>
+            <h2 className="mt-8 text-xl font-bold text-white uppercase tracking-[0.3em] animate-pulse italic font-mono">
+              Initializing <span className="text-orange-500">Bombardment</span>
+            </h2>
+            <div className="mt-4 flex gap-2">
+              <div className="w-2 h-2 rounded-full bg-orange-500 animate-bounce [animation-delay:-0.3s]" />
+              <div className="w-2 h-2 rounded-full bg-orange-500 animate-bounce [animation-delay:-0.15s]" />
+              <div className="w-2 h-2 rounded-full bg-orange-500 animate-bounce" />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Weekly Ad Modal */}
+      <AnimatePresence>
+        {showWeeklyAd && !isBanned && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-6 bg-black/95 backdrop-blur-md">
+            <motion.div 
+              initial={{ scale: 0.8, opacity: 0, rotateX: 45 }}
+              animate={{ scale: 1, opacity: 1, rotateX: 0 }}
+              exit={{ scale: 0.8, opacity: 0, rotateX: 45 }}
+              className="max-w-md w-full bg-[#151619] border-2 border-orange-500 rounded-[2rem] p-10 shadow-[0_0_100px_rgba(249,115,22,0.3)] relative overflow-hidden"
+            >
+              <div className="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl" />
+              <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl" />
+              
+              <button 
+                onClick={() => setShowWeeklyAd(false)}
+                className="absolute top-6 right-6 text-gray-500 hover:text-white transition-colors z-10"
+              >
+                <XCircle className="w-8 h-8" />
+              </button>
+
+              <div className="text-center relative z-10">
+                <div className="w-20 h-20 bg-orange-500 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-[0_0_30px_rgba(249,115,22,0.5)] rotate-12">
+                  <Zap className="w-10 h-10 text-black fill-current" />
+                </div>
+                
+                <h2 className="text-4xl font-black text-white mb-4 uppercase tracking-tighter italic">
+                  ADS! <span className="text-orange-500">JOIN NOW</span>
+                </h2>
+                
+                <p className="text-gray-400 text-base leading-relaxed mb-10 font-medium">
+                  Don't miss out on our exclusive weekly updates and premium tools. Join the elite community today.
+                </p>
+
+                <a 
+                  href="https://t.me/+T1ER2iGB0qZmMTJl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShowWeeklyAd(false)}
+                  className="block w-full bg-orange-500 hover:bg-orange-600 text-black font-black py-5 rounded-2xl transition-all uppercase tracking-[0.2em] text-sm shadow-[0_10px_20px_rgba(249,115,22,0.3)] hover:translate-y-[-2px] active:translate-y-[0px]"
+                >
+                  JOIN NOW
+                </a>
+                
+                <div className="mt-6 text-[10px] text-gray-600 uppercase tracking-widest font-mono">
+                  Weekly Exclusive Offer
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Fake Popup Ad */}
       <AnimatePresence>
