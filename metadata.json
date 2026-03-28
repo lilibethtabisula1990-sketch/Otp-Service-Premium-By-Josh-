@@ -1,0 +1,5 @@
+{
+  "name": "SMS Service Stress Tester",
+  "description": "A professional tool for testing SMS service integrations and OTP delivery across multiple platforms, featuring real-time analytics and concurrent request handling.",
+  "requestFramePermissions": []
+}
